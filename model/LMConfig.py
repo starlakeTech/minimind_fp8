@@ -1,5 +1,4 @@
 from transformers import PretrainedConfig
-from typing import List
 
 
 class LMConfig(PretrainedConfig):
@@ -23,15 +22,16 @@ class LMConfig(PretrainedConfig):
             # Here are the specific configurations of MOE
             # When use_moe is false, the following is invalid
             ####################################################
-            use_moe: bool = False,
+            use_moe: bool = True,
             ####################################################
             num_experts_per_tok: int = 2,
-            n_routed_experts: int = 4,
-            n_shared_experts: bool = True,
+            n_routed_experts: int = 8,
+            n_shared_experts: int = 0,  # Changed to int
             scoring_func: str = 'softmax',
             aux_loss_alpha: float = 0.1,
             seq_aux: bool = True,
             norm_topk_prob: bool = True,
+            fp8: bool = False,  # Add FP8 flag
             **kwargs,
     ):
         self.dim = dim
@@ -58,4 +58,5 @@ class LMConfig(PretrainedConfig):
         self.aux_loss_alpha = aux_loss_alpha  # 辅助损失的alpha参数
         self.seq_aux = seq_aux  # 是否在序列级别上计算辅助损失
         self.norm_topk_prob = norm_topk_prob  # 是否标准化top-k概率
+        self.fp8 = fp8  # Store the FP8 flag
         super().__init__(**kwargs)
