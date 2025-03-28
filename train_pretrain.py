@@ -282,13 +282,13 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, default="./dataset/pretrain_hq.jsonl", help="Path to the pretraining data.")
     # Training Hyperparameters
     parser.add_argument("--epochs", type=int, default=1, help="Number of training epochs.")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size per GPU.") # Reduced default for potential memory increase with FP8/MoE
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU.") # Reduced default for potential memory increase with FP8/MoE
     parser.add_argument("--learning_rate", type=float, default=5e-4, help="Peak learning rate.")
     parser.add_argument("--accumulation_steps", type=int, default=8, help="Number of steps to accumulate gradients.")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping value.")
     parser.add_argument("--warmup_iters", type=int, default=0, help="Number of warmup iterations (currently unused in get_lr).")
     # Model Configuration
-    parser.add_argument('--dim', default=512, type=int, help="Model dimension.")
+    parser.add_argument('--dim', default=513, type=int, help="Model dimension.")
     parser.add_argument('--n_layers', default=8, type=int, help="Number of transformer layers.")
     parser.add_argument('--max_seq_len', default=512, type=int, help="Maximum sequence length.")
     parser.add_argument('--use_moe', action='store_true', help="Enable Mixture of Experts layers.") # Use action='store_true'
@@ -302,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action="store_true", help="Enable logging with Weights & Biases.")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain-TE", help="WandB project name.")
     parser.add_argument("--log_interval", type=int, default=10, help="Log frequency (in optimizer steps).")
-    parser.add_argument("--save_interval", type=int, default=100, help="Checkpoint save frequency (in optimizer steps).")
+    parser.add_argument("--save_interval", type=int, default=1000, help="Checkpoint save frequency (in optimizer steps).")
     # Other
     parser.add_argument("--num_workers", type=int, default=1, help="Number of dataloader workers.")
     parser.add_argument('--local_rank', type=int, default=-1, help="Local rank (set by torchrun, used internally).") # Keep for compatibility if needed
@@ -416,13 +416,50 @@ if __name__ == "__main__":
     # --- Training Loop ---
     Logger("Starting training...")
     for epoch in range(args.epochs):
+        # Logger("Starting training...")
+        # model_to_hook = model.module if ddp else model # Get the underlying model if using DDP
+        # print("Registering backward hooks...")
+        # register_backward_hooks(model_to_hook)
+        # print("Finished registering hooks.")
         if ddp:
             train_sampler.set_epoch(epoch) # Ensure proper shuffling with DDP sampler
         train_epoch(epoch, wandb, fp8_recipe_instance)
+    # --- Final Checkpoint Saving (Added) ---
+    Logger("Training finished. Saving final checkpoint...")
+    if not ddp or dist.get_rank() == 0: # Save only on rank 0
+        model.eval() # Set model to evaluation mode for saving state_dict
+        moe_path = '_moe' if lm_config.use_moe else ''
+        fp8_path = '_fp8' if args.fp8 and has_te else '' # Only add fp8 if actually used
 
+        # Determine the final optimizer step count
+        # Note: If training finished exactly on a save_interval step, this might duplicate the last save, which is generally acceptable.
+        final_opt_step = args.epochs * iter_per_epoch
+
+        # Use a distinct name for the final checkpoint
+        ckp_name = f'pretrain_dim{lm_config.dim}_final_ep{args.epochs}_optstep{final_opt_step}{moe_path}{fp8_path}.pth'
+        ckp_path = os.path.join(args.save_dir, ckp_name)
+
+        # Get state dict correctly whether using DDP or not
+        state_dict_to_save = model.module.state_dict() if isinstance(model, DistributedDataParallel) else model.state_dict()
+
+        # Save the final model state
+        # Consider saving optimizer/scaler state if needed for resuming
+        # checkpoint = {
+        #     'model': state_dict_to_save,
+        #     'optimizer': optimizer.state_dict(),
+        #     'scaler': scaler.state_dict(),
+        #     'epoch': args.epochs, # Mark as final epoch
+        #     'optimizer_step': final_opt_step,
+        #     'args': args
+        # }
+        # torch.save(checkpoint, ckp_path)
+        torch.save(state_dict_to_save, ckp_path) # Save only model state for now
+        Logger(f"Saved final checkpoint to {ckp_path}")
+        # No need to set model back to train() as training is finished
     # --- Cleanup ---
-    if ddp:
-        dist.destroy_process_group()
+    Logger("Training finished.")
     if wandb is not None and (not ddp or dist.get_rank() == 0):
         wandb.finish()
-    Logger("Training finished.")
+    if ddp:
+        dist.destroy_process_group()
+    
